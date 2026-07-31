@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: wave-prelive-favorites
+    runtime: python
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    startCommand: python3 -u app.py
+    healthCheckPath: /health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.9
+      - key: PRELIVE_AUTO_SCAN
+        value: "1"
+      - key: PRELIVE_AUTO_SCAN_DAYS_AHEAD
+        value: "1"
+      - key: PRELIVE_AUTO_SCAN_INTERVAL_MINUTES
+        value: "30"
+      - key: PRELIVE_AUTO_SCAN_INCLUDE_PLAYED
+        value: "0"
+      - key: API_FOOTBALL_KEY
+        sync: false

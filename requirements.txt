@@ -1,0 +1,1 @@
+# Standard-library only app; this file lets Python hosts detect the service.

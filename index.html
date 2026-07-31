@@ -1,0 +1,261 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>WAVE Pre-Live Favorites</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <div class="mark">W</div>
+      <div>
+        <strong>WAVE Pre-Live</strong>
+        <span>favoritos mandantes</span>
+      </div>
+    </div>
+    <div class="status">
+      <span class="dot" id="dot"></span>
+      <span id="statusText">carregando...</span>
+    </div>
+  </header>
+
+  <main>
+    <section class="controls">
+      <label>
+        Data
+        <input type="date" id="dateInput" />
+      </label>
+      <button id="todayBtn" type="button">Hoje</button>
+      <button id="tomorrowBtn" type="button">Amanhã</button>
+      <button id="scanBtn" type="button">Pré-live salvo</button>
+      <button id="historyBtn" type="button">Histórico salvo</button>
+      <button id="refreshResultsBtn" type="button">Atualizar placares</button>
+    </section>
+
+    <section class="metrics" id="metrics"></section>
+
+    <section class="tabs">
+      <button class="tab active" data-tab="qualified">Entradas <span id="qCount">0</span></button>
+      <button class="tab" data-tab="rejected">Rejeitados <span id="rCount">0</span></button>
+      <button class="tab" data-tab="history">Histórico completo <span id="hCount">0</span></button>
+    </section>
+
+    <section id="list" class="list"></section>
+  </main>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const state = { tab: "qualified", data: null, history: null, defaults: null, includePlayed: false };
+    const BR_TIME_ZONE = "America/Sao_Paulo";
+
+    function esc(value) {
+      return String(value ?? "").replace(/[&<>"']/g, c => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#039;" }[c]));
+    }
+
+    function fmtOdd(v) {
+      const n = Number(v);
+      return Number.isFinite(n) ? n.toFixed(2) : "-";
+    }
+
+    function dateFromTimestampSeconds(value) {
+      const ts = Number(value);
+      return Number.isFinite(ts) && ts > 0 ? new Date(ts * 1000) : null;
+    }
+
+    function fmtBRDateFromTs(value, fallback = "-") {
+      const date = dateFromTimestampSeconds(value);
+      if (!date) return fallback || "-";
+      return new Intl.DateTimeFormat("pt-BR", {
+        day: "2-digit",
+        month: "2-digit",
+        year: "numeric",
+        timeZone: BR_TIME_ZONE,
+      }).format(date);
+    }
+
+    function fmtBRTimeFromTs(value, fallback = "--:--") {
+      const date = dateFromTimestampSeconds(value);
+      if (!date) return fallback || "--:--";
+      return new Intl.DateTimeFormat("pt-BR", {
+        hour: "2-digit",
+        minute: "2-digit",
+        timeZone: BR_TIME_ZONE,
+      }).format(date);
+    }
+
+    function fmtBRDateTime(value) {
+      if (!value) return "-";
+      const date = new Date(value);
+      if (Number.isNaN(date.getTime())) return value;
+      return new Intl.DateTimeFormat("pt-BR", {
+        day: "2-digit",
+        month: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        timeZone: BR_TIME_ZONE,
+      }).format(date);
+    }
+
+    function setBusy(running) {
+      $("scanBtn").disabled = running;
+      $("historyBtn").disabled = running;
+      $("refreshResultsBtn").disabled = running;
+      $("scanBtn").textContent = running ? "Escaneando..." : "Pré-live salvo";
+      $("dot").className = "dot " + (running ? "run" : state.data?.status === "error" ? "err" : "ok");
+    }
+
+    function metric(label, value) {
+      return `<div class="metric"><span>${label}</span><strong>${esc(value)}</strong></div>`;
+    }
+
+    function checkPill(check) {
+      const cls = check?.ok ? "pass" : "fail";
+      const value = check?.value ?? "-";
+      return `<span class="check ${cls}">${esc(value)} / ${esc(check?.target || "-")}</span>`;
+    }
+
+    function matchRows(matches) {
+      if (!matches?.length) return `<div class="muted tiny">Sem jogos retornados.</div>`;
+      return matches.slice(0, 5).map(m => `
+        <div class="match-row">
+          <span>${esc(fmtBRDateFromTs(m.timestamp, m.date))}</span>
+          <strong>${esc(m.home)} ${esc(m.score)} ${esc(m.away)}</strong>
+          <em>${esc(m.result)}</em>
+        </div>
+      `).join("");
+    }
+
+    function card(item) {
+      const c = item.checks || {};
+      const rankGap = item.standing?.rank_gap ?? "-";
+      const homeRank = item.standing?.home?.rank ?? "-";
+      const awayRank = item.standing?.away?.rank ?? "-";
+      const result = item.entry_result || { label: "Pendente", class: "pending" };
+      const checksTotal = item.checks_total ?? (Object.keys(c).length || 4);
+      const checksScore = `${item.checks_passed ?? Object.values(c).filter(x => x?.ok).length}/${checksTotal}`;
+      const brDate = fmtBRDateFromTs(item.timestamp, item.date);
+      const brTime = fmtBRTimeFromTs(item.timestamp, item.time);
+      return `
+        <article class="card ${item.qualified ? "qualified" : ""}">
+          <div class="card-top">
+            <div>
+              <div class="league">${esc(item.league?.country)} · ${esc(item.league?.name)}</div>
+              <h2>${esc(item.home?.name)} <span>vs</span> ${esc(item.away?.name)}</h2>
+            </div>
+            <div class="time">${esc(brDate)}<strong>${esc(brTime)}</strong><small>Horário do Brasil</small></div>
+          </div>
+          <div class="summary">
+            <div><span>Odd casa</span><strong>${fmtOdd(item.home_odd?.odd)}</strong><small>${esc(item.home_odd?.bookmaker)}</small></div>
+            <div><span>H2H casa</span><strong>${esc(c.h2h?.value ?? "-")}/${esc((c.h2h?.target || "").split("/").pop() || "5")}</strong><small>vitorias</small></div>
+            <div><span>Casa ult. 10</span><strong>${esc(c.home_form?.value ?? "-")}/10</strong><small>vitorias</small></div>
+            <div><span>Resultado</span><strong class="result ${esc(result.class)}">${esc(result.label)}</strong><small>${esc(item.score)} · ${esc(item.status)}</small></div>
+          </div>
+          <div class="standing-line">Tabela: ${esc(homeRank)}º x ${esc(awayRank)}º · gap ${esc(rankGap)} · métricas ${esc(checksScore)}</div>
+          <div class="checks">
+            ${checkPill(c.odd)}
+            ${checkPill(c.h2h)}
+            ${checkPill(c.home_form)}
+            ${checkPill(c.standing)}
+          </div>
+          <details>
+            <summary>Detalhes</summary>
+            <div class="detail-grid">
+              <div>
+                <h3>H2H</h3>
+                ${matchRows(item.h2h)}
+              </div>
+              <div>
+                <h3>Mandante em casa</h3>
+                ${matchRows(item.home_form)}
+              </div>
+            </div>
+          </details>
+        </article>
+      `;
+    }
+
+    function render() {
+      const data = state.data || {};
+      const history = state.history || { stats: {}, entries: [] };
+      const running = data.status === "running";
+      setBusy(running);
+      $("statusText").textContent = data.message || "Pronto.";
+      $("qCount").textContent = data.qualified?.length || 0;
+      $("rCount").textContent = data.rejected?.length || 0;
+      $("hCount").textContent = history.stats?.total || 0;
+      if (state.tab === "history") {
+        $("metrics").innerHTML = [
+          metric("Validados", history.stats?.total ?? 0),
+          metric("GREEN", history.stats?.green ?? 0),
+          metric("RED", history.stats?.red ?? 0),
+          metric("Pendentes", history.stats?.pending ?? 0),
+        ].join("");
+      } else {
+        $("metrics").innerHTML = [
+          metric("Jogos do dia", data.total_fixtures ?? 0),
+          metric(data.include_played ? "Analisados" : "Pre-live", data.include_played ? (data.scan_fixtures ?? 0) : (data.prelive_fixtures ?? 0)),
+          metric("Odd / analisados", `${data.odd_candidates ?? 0} / ${data.processed_candidates ?? data.odd_candidates ?? 0}`),
+          metric("Atualizado", fmtBRDateTime(data.finished_at || data.started_at)),
+        ].join("");
+      }
+      const items = state.tab === "history" ? (history.entries || []) : (data[state.tab] || []);
+      $("list").innerHTML = items.length
+        ? items.map(card).join("")
+        : `<div class="empty">Nenhuma partida nesta aba.</div>`;
+    }
+
+    async function refreshHistory() {
+      state.history = await fetch("/api/history?ts=" + Date.now()).then(r => r.json());
+    }
+
+    async function refresh() {
+      const params = new URLSearchParams({
+        ts: Date.now(),
+        date: $("dateInput").value,
+        include_played: state.includePlayed ? "1" : "0"
+      });
+      const r = await fetch("/api/state?" + params.toString());
+      state.data = await r.json();
+      await refreshHistory();
+      render();
+    }
+
+    async function loadSaved(includePlayed = false) {
+      state.includePlayed = includePlayed;
+      await refresh();
+    }
+
+    async function boot() {
+      const defaults = await fetch("/api/default-date").then(r => r.json());
+      state.defaults = defaults;
+      $("dateInput").value = defaults.tomorrow;
+      $("todayBtn").onclick = () => { $("dateInput").value = defaults.today; refresh(); };
+      $("tomorrowBtn").onclick = () => { $("dateInput").value = defaults.tomorrow; refresh(); };
+      $("dateInput").onchange = refresh;
+      $("scanBtn").onclick = () => loadSaved(false);
+      $("historyBtn").onclick = () => loadSaved(true);
+      $("refreshResultsBtn").onclick = async () => {
+        $("refreshResultsBtn").disabled = true;
+        $("refreshResultsBtn").textContent = "Atualizando...";
+        state.history = await fetch("/api/history/refresh", { method: "POST" }).then(r => r.json());
+        $("refreshResultsBtn").textContent = "Atualizar placares";
+        render();
+      };
+      document.querySelectorAll(".tab").forEach(btn => {
+        btn.onclick = () => {
+          document.querySelectorAll(".tab").forEach(b => b.classList.remove("active"));
+          btn.classList.add("active");
+          state.tab = btn.dataset.tab;
+          render();
+        };
+      });
+      await refresh();
+      setInterval(refresh, 2500);
+    }
+
+    boot();
+  </script>
+</body>
+</html>
