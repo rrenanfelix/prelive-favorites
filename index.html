@@ -1,0 +1,927 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <script>
+    // Garante barra final (necessario pros caminhos relativos sob /prelive do Tailscale Serve)
+    if (location.pathname !== "/" && !location.pathname.endsWith("/")) {
+      location.replace(location.pathname + "/" + location.search + location.hash);
+    }
+  </script>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>WAVE Pre-Live Favorites</title>
+  <link rel="stylesheet" href="styles.css" />
+
+<script>
+(() => {
+  const realFetch = window.fetch.bind(window);
+  const cache = {};
+  const load = (n) => cache[n] || (cache[n] = realFetch(`snap/${n}.json?v=202611052101`).then(r => {
+    if (!r.ok) throw new Error("snap " + n + " " + r.status);
+    return r.json();
+  }));
+  const dayOf = (it) => it.timestamp
+    ? new Date((it.timestamp - 10800) * 1000).toISOString().slice(0, 10)
+    : String(it.date || "").slice(0, 10);
+  const byTs = (a, b) => (a.timestamp || 0) - (b.timestamp || 0);
+  async function route(url, method) {
+    const u = new URL(url, location.href);
+    const p = u.pathname.split("/api/")[1];
+    const q = u.searchParams;
+    if (method === "POST") return { ok: false, read_only: true };
+    if (p === "default-date") return load("meta");
+    if (p === "state") return load("state");
+    if (p === "overall") return load("overall");
+    if (p === "by-day") {
+      if (!q.has("date")) return load("days");
+      const D = q.get("date");
+      const o = await load("overall");
+      return { date: D, qualified: o.qualified.filter(x => dayOf(x) === D).sort(byTs) };
+    }
+    if (p === "away") {
+      const a = await load("away");
+      if (!q.has("date")) return a;
+      const D = q.get("date");
+      return { date: D, qualified: a.qualified.filter(x => String(x.date || "") === D) };
+    }
+    if (p === "by-days") {
+      let lo = q.get("from"), hi = q.get("to") || lo;
+      if (hi < lo) [lo, hi] = [hi, lo];
+      const inRange = (d) => d >= lo && d <= hi;
+      const [o, a] = await Promise.all([load("overall"), load("away")]);
+      const seen = new Set();
+      const merged = [];
+      for (const it of [...o.qualified.filter(x => inRange(dayOf(x))), ...a.qualified.filter(x => inRange(String(x.date || "")))]) {
+        const k = `${it.fixture_id}:${it.entry_side || "home"}`;
+        if (seen.has(k)) continue;
+        seen.add(k);
+        merged.push(it);
+      }
+      merged.sort(byTs);
+      return { qualified: merged };
+    }
+    throw new Error("fora do snapshot: " + p);
+  }
+  window.fetch = (input, init) => {
+    const url = typeof input === "string" ? input : input.url;
+    if (!/(^|\/)api\//.test(url)) return realFetch(input, init);
+    const method = ((init && init.method) || "GET").toUpperCase();
+    return route(url, method).then(body => ({ ok: true, status: 200, json: async () => body }));
+  };
+})();
+</script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <div class="mark">W</div>
+      <div>
+        <strong>WAVE Pre-Live</strong>
+        <span>favoritos mandantes</span>
+      </div>
+    </div>
+    <div class="status">
+      <span class="dot" id="dot"></span>
+      <span id="statusText">carregando...</span>
+    </div>
+  </header>
+
+  <main>
+    <section class="controls">
+      <button id="refreshAllBtn" type="button" class="refresh-all-btn" hidden style="display:none">🔄 Atualizar tudo</button>
+      <span id="refreshStatus" class="refresh-status">📸 Atualizado em 05/11/2026 21:01</span>
+      <span class="spacer"></span>
+      <button id="todayBrBtn" type="button" class="byday-btn">Hoje</button>
+      <button id="tomorrowBrBtn" type="button" class="byday-btn">Amanhã</button>
+      <button id="calBtn" type="button" class="byday-btn" title="Selecionar vários dias">📆 Calendário</button>
+      <input type="date" id="dateInput" hidden />
+
+      <div id="calPopover" class="cal-popover" hidden>
+        <div class="cal-head">
+          <button id="calPrev" type="button" class="cal-nav">‹</button>
+          <strong id="calTitle"></strong>
+          <button id="calNext" type="button" class="cal-nav">›</button>
+        </div>
+        <div class="cal-grid" id="calGrid"></div>
+        <div class="cal-foot">
+          <span id="calSelInfo">0 dia(s)</span>
+          <span class="spacer"></span>
+          <button id="calClear" type="button" class="cal-ghost">Limpar</button>
+          <button id="calApply" type="button" class="cal-apply">Aplicar</button>
+        </div>
+      </div>
+    </section>
+
+    <div id="dayBanner" class="day-banner" hidden></div>
+    <div id="only4Summary" class="only4-summary" hidden></div>
+
+    <section class="metrics" id="metrics"></section>
+
+    <section class="tabs">
+      <button class="tab active" data-tab="qualified">Entradas <span id="qCount">0</span></button>
+      <button class="tab" data-tab="history">Histórico <span id="hCount">0</span></button>
+      <span class="spacer"></span>
+      <span class="filter-label">Filtrar:</span>
+      <button id="filterHomeBtn" class="filter-btn" type="button" title="Só jogos em casa">🏠 Casa</button>
+      <button id="filterAwayBtn" class="filter-btn" type="button" title="Só visitantes">🚌 Visitante</button>
+      <button id="only4Btn" class="filter-btn" type="button" title="Só favoritos 4/4">⭐ 4/4 <span id="only4Count"></span></button>
+      <span class="tier-sep">·</span>
+      <button class="filter-btn tier-btn" data-tier="1" type="button" title="Tier 1 · Entraria">🟢 T1</button>
+      <button class="filter-btn tier-btn" data-tier="2" type="button" title="Tier 2 · Consideraria">🟡 T2</button>
+      <button class="filter-btn tier-btn" data-tier="3" type="button" title="Tier 3 · Marginal">🟠 T3</button>
+      <button class="filter-btn tier-btn" data-tier="4" type="button" title="Tier 4 · Evitar">🔴 T4</button>
+      <span id="rCount" hidden></span>
+    </section>
+
+    <section id="list" class="list"></section>
+  </main>
+
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const state = { tab: "qualified", data: null, history: null, defaults: null, includePlayed: false, mode: "snapshot", dayDate: null, dayStats: null, only4: false, fHome: false, fAway: false, tiers: new Set(), allHistory: [], bets: new Set(), selectedDays: new Set(), calYear: null, calMonth: null, calAnchor: null, dayCounts: {} };
+
+    function is4of4(item) {
+      const total = item.checks_total ?? Object.keys(item.checks || {}).length ?? 4;
+      const passed = item.checks_passed ?? Object.values(item.checks || {}).filter(x => x?.ok).length;
+      return total > 0 && passed >= total;
+    }
+
+    // Classifica um 4/4 em Tier 1-4 usando a lógica de aposta (gap, odd, liga, reserva)
+    const STRONG_LEAGUES = ["premier league","serie a","eredivisie","superliga","bundesliga","la liga","ligue 1","primeira liga","liga i","ekstraklasa","super league","j1 league","major league soccer","liga profesional","brasileir","championship","serie b","segunda","jupiler","süper lig","primera a","primera division","primera división"];
+    const WEAK_LEAGUES = ["division 2","division 3","2. division","3. division","4. division","non league","non-league","regionalliga","primera c","ettan","kakkonen","ykkönen","liga de ascenso","serie d","reserve","u19","u20","u21","esiliiga","2. liga","segunda b","oberliga","nasjonal"];
+    const RESERVE_FLAGS = [" ii"," iii"," res.","res ","reserv","akatemia","academy","academia","u19","u20","u21","sub-20","sub-21","sub 20"];
+
+    function tierOf(item) {
+      const c = item.checks || {};
+      const odd = Number(item.home_odd?.odd) || 0;
+      const gap = Number(c.standing?.value) || 0;
+      const h2h = Number(c.h2h?.value) || 0;
+      const form = Number(c.home_form?.value) || 0;
+      const league = (item.league?.name || "").toLowerCase();
+      const side = item.entry_side === "away";
+      const pick = ((side ? item.away?.name : item.home?.name) || "").toLowerCase();
+      let score = 0; const pos = [], neg = [];
+      if (gap >= 12) { score += 3; pos.push("gap enorme"); }
+      else if (gap >= 9) { score += 2; pos.push("gap grande"); }
+      else if (gap >= 7) { score += 1; }
+      if (odd >= 1.5 && odd <= 1.9) { score += 2; pos.push("odd na faixa"); }
+      else if (odd > 2.1) { score -= 2; neg.push("odd alta"); }
+      if (odd >= 2.25) { score -= 1; neg.push("quase moeda"); }
+      if (h2h >= 5) { score += 1; pos.push("h2h 5/5"); }
+      else if (h2h >= 4) { score += 0.5; }
+      if (form >= 8) { score += 1; pos.push("forma alta"); }
+      else if (form <= 5) { score -= 0.5; }
+      const strong = STRONG_LEAGUES.some(s => league.includes(s));
+      const weak = WEAK_LEAGUES.some(s => league.includes(s));
+      if (strong && !weak) { score += 2; pos.push("liga forte"); }
+      if (weak) { score -= 2; neg.push("liga fraca"); }
+      if (RESERVE_FLAGS.some(f => pick.endsWith(f.trim()) || pick.includes(f))) { score -= 3; neg.push("time reserva/base"); }
+      if (side) { score -= 0.5; }
+      let tier;
+      if (score >= 4) tier = 1;
+      else if (score >= 2) tier = 2;
+      else if (score >= 0) tier = 3;
+      else tier = 4;
+      const reasons = tier <= 2 ? pos.slice(0, 3) : neg.slice(0, 3);
+      return { tier, reasons };
+    }
+
+    const TIER_META = {
+      1: { icon: "🟢", label: "TIER 1 · Entraria" },
+      2: { icon: "🟡", label: "TIER 2 · Consideraria" },
+      3: { icon: "🟠", label: "TIER 3 · Marginal" },
+      4: { icon: "🔴", label: "TIER 4 · Evitar" },
+    };
+
+    function tierBadge(item) {
+      const { tier, reasons } = tierOf(item);
+      const m = TIER_META[tier];
+      return `<div class="tier-badge tier-${tier}"><strong>${m.icon} ${m.label}</strong>`
+        + (reasons.length ? `<span>${esc(reasons.join(" · "))}</span>` : "") + `</div>`;
+    }
+
+    // Política de envio calibrada com AGOSTO/2026 (tier × lado): full / half / block.
+    // Mesma regra do digest send_daily_v2.py (ENTRY_POLICY).
+    const ENTRY_POLICY = {
+      "1|home": "full", "1|away": "full", "3|home": "full", "4|away": "full",
+      "2|home": "half", "3|away": "half",
+      "2|away": "block", "4|home": "block",
+    };
+    const POLICY_META = {
+      full:  { cls: "pol-full",  icon: "✅", label: "ENTRARIA · stake cheio" },
+      half:  { cls: "pol-half",  icon: "½",  label: "ENTRARIA · meia entrada" },
+      block: { cls: "pol-block", icon: "⛔", label: "NÃO ENTRARIA" },
+    };
+    function policyOf(item) {
+      const { tier } = tierOf(item);
+      const side = item.entry_side === "away" ? "away" : "home";
+      return ENTRY_POLICY[`${tier}|${side}`] || "block";
+    }
+    function policyBadge(item) {
+      const p = POLICY_META[policyOf(item)];
+      const side = item.entry_side === "away" ? "🚌 Fora" : "🏠 Casa";
+      return `<div class="pol-badge ${p.cls}"><strong>${p.icon} ${p.label}</strong><span>${side}</span></div>`;
+    }
+
+    function loadBets() {
+      try { return new Set(JSON.parse(localStorage.getItem("prelive_bets") || "[]")); }
+      catch (e) { return new Set(); }
+    }
+    function saveBets() { localStorage.setItem("prelive_bets", JSON.stringify([...state.bets])); }
+    function betKey(item) { return `${item.entry_side === "away" ? "a" : "h"}:${item.fixture_id}`; }
+    const BR_TIME_ZONE = "America/Sao_Paulo";
+
+    function esc(value) {
+      return String(value ?? "").replace(/[&<>"']/g, c => ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#039;" }[c]));
+    }
+
+    function fmtOdd(v) {
+      const n = Number(v);
+      return Number.isFinite(n) ? n.toFixed(2) : "-";
+    }
+
+    function fmtBRL(v) {
+      const n = Number(v) || 0;
+      return "R$ " + n.toLocaleString("pt-BR", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    }
+
+    function dateFromTimestampSeconds(value) {
+      const ts = Number(value);
+      return Number.isFinite(ts) && ts > 0 ? new Date(ts * 1000) : null;
+    }
+
+    function fmtBRDateFromTs(value, fallback = "-") {
+      const date = dateFromTimestampSeconds(value);
+      if (!date) return fallback || "-";
+      return new Intl.DateTimeFormat("pt-BR", {
+        day: "2-digit",
+        month: "2-digit",
+        year: "numeric",
+        timeZone: BR_TIME_ZONE,
+      }).format(date);
+    }
+
+    function fmtBRTimeFromTs(value, fallback = "--:--") {
+      const date = dateFromTimestampSeconds(value);
+      if (!date) return fallback || "--:--";
+      return new Intl.DateTimeFormat("pt-BR", {
+        hour: "2-digit",
+        minute: "2-digit",
+        timeZone: BR_TIME_ZONE,
+      }).format(date);
+    }
+
+    function fmtBRDateTime(value) {
+      if (!value) return "-";
+      const date = new Date(value);
+      if (Number.isNaN(date.getTime())) return value;
+      return new Intl.DateTimeFormat("pt-BR", {
+        day: "2-digit",
+        month: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+        timeZone: BR_TIME_ZONE,
+      }).format(date);
+    }
+
+    function setBusy(running) {
+      $("dot").className = "dot " + (running ? "run" : state.data?.status === "error" ? "err" : "ok");
+    }
+
+    function metric(label, value) {
+      return `<div class="metric"><span>${label}</span><strong>${esc(value)}</strong></div>`;
+    }
+
+    function checkPill(check) {
+      const cls = check?.ok ? "pass" : "fail";
+      const value = check?.value ?? "-";
+      return `<span class="check ${cls}">${esc(value)} / ${esc(check?.target || "-")}</span>`;
+    }
+
+    function matchRows(matches) {
+      if (!matches?.length) return `<div class="muted tiny">Sem jogos retornados.</div>`;
+      return matches.slice(0, 5).map(m => `
+        <div class="match-row">
+          <span>${esc(fmtBRDateFromTs(m.timestamp, m.date))}</span>
+          <strong>${esc(m.home)} ${esc(m.score)} ${esc(m.away)}</strong>
+          <em>${esc(m.result)}</em>
+        </div>
+      `).join("");
+    }
+
+    const FINAL_STATUSES = new Set(["FT", "AET", "PEN"]);
+    const LIVE_STATUSES = new Set(["1H", "HT", "2H", "ET", "BT", "P", "SUSP", "INT", "LIVE"]);
+
+    function matchPhase(item) {
+      const st = String(item.status || "");
+      if (FINAL_STATUSES.has(st)) return "final";
+      if (LIVE_STATUSES.has(st)) return "live";
+      return "scheduled";
+    }
+
+    function scoreBadge(item) {
+      const phase = matchPhase(item);
+      const hasScore = item.score && item.score !== "-";
+      if (phase === "final" && hasScore) {
+        const cls = item.entry_result?.class || "";
+        const label = item.entry_result?.label || "FINAL";
+        return `<div class="score-badge ${esc(cls)}"><small>${esc(label)}</small><strong>${esc(item.score)}</strong><em>encerrado</em></div>`;
+      }
+      if (phase === "live") {
+        return `<div class="score-badge live"><small>AO VIVO · ${esc(item.status)}</small><strong>${esc(hasScore ? item.score : "0x0")}</strong><em>em andamento</em></div>`;
+      }
+      return "";
+    }
+
+    function copyText(item) {
+      const c = item.checks || {};
+      const checksTotal = item.checks_total ?? (Object.keys(c).length || 4);
+      const checksScore = `${item.checks_passed ?? Object.values(c).filter(x => x?.ok).length}/${checksTotal}`;
+      const brDate = fmtBRDateFromTs(item.timestamp, item.date);
+      const brTime = fmtBRTimeFromTs(item.timestamp, item.time);
+      const homeRank = item.standing?.home?.rank ?? "-";
+      const awayRank = item.standing?.away?.rank ?? "-";
+      const lines = [
+        `⚽ ${item.home?.name ?? "-"} x ${item.away?.name ?? "-"}`,
+        `🏆 ${item.league?.country ?? "-"} · ${item.league?.name ?? "-"}`,
+        `🕒 ${brDate} ${brTime} (BR)`,
+        `📊 Odd casa ${fmtOdd(item.home_odd?.odd)} (${item.home_odd?.bookmaker ?? "-"})`,
+        `✅ Checks ${checksScore} · H2H ${c.h2h?.value ?? "-"}/5 · Forma ${c.home_form?.value ?? "-"}/10 · Tabela ${homeRank}º x ${awayRank}º`,
+        ``,
+        item.entry_side === "away"
+          ? `🎯 Aposta: Vitória ${item.away?.name ?? "visitante"} (visitante)`
+          : `🎯 Aposta: Vitória ${item.home?.name ?? "casa"} (mandante)`,
+      ];
+      if (matchPhase(item) === "final" && item.score && item.score !== "-") {
+        const emoji = item.entry_result?.class === "green" ? "🟢" : item.entry_result?.class === "red" ? "🔴" : "⚪";
+        lines.push(`${emoji} Placar final: ${item.score} · ${item.entry_result?.label ?? ""}`.trim());
+      }
+      return lines.join("\n");
+    }
+
+    function card(item) {
+      const c = item.checks || {};
+      const rankGap = item.standing?.rank_gap ?? "-";
+      const homeRank = item.standing?.home?.rank ?? "-";
+      const awayRank = item.standing?.away?.rank ?? "-";
+      const result = item.entry_result || { label: "Pendente", class: "pending" };
+      const checksTotal = item.checks_total ?? (Object.keys(c).length || 4);
+      const checksPassed = item.checks_passed ?? Object.values(c).filter(x => x?.ok).length;
+      const checksScore = `${checksPassed}/${checksTotal}`;
+      const isTop = checksPassed >= checksTotal;
+      const brDate = fmtBRDateFromTs(item.timestamp, item.date);
+      const brTime = fmtBRTimeFromTs(item.timestamp, item.time);
+      const side = item.entry_side === "away";
+      const pickName = side ? item.away?.name : item.home?.name;
+      const homeCell = side ? esc(item.home?.name) : `<strong class="pick">${esc(item.home?.name)}</strong>`;
+      const awayCell = side ? `<strong class="pick">${esc(item.away?.name)}</strong>` : esc(item.away?.name);
+      const placed = state.bets.has(betKey(item));
+      return `
+        <article class="card ${item.qualified ? "qualified" : ""} ${isTop ? "top4" : ""} ${side ? "entry-away" : ""} ${placed ? "placed" : ""} ${isTop ? "pol-" + policyOf(item) + "-card" : ""}">
+          ${side ? `<div class="away-banner">🚌 ENTRADA NO VISITANTE · aposta na vitória de ${esc(pickName)} (fora)</div>` : ""}
+          <div class="card-top">
+            <div>
+              <div class="league">${esc(item.league?.country)} · ${esc(item.league?.name)}</div>
+              <h2>${isTop ? `<span class="star" title="Favorito 4/4">⭐</span> ` : ""}${homeCell} <span>vs</span> ${awayCell}</h2>
+              ${isTop ? tierBadge(item) + policyBadge(item) : ""}
+            </div>
+            <div class="card-top-right">
+              <div class="card-actions">
+                <button class="bet-btn ${placed ? "on" : ""}" type="button" data-bet="${esc(betKey(item))}">${placed ? "✅ Apostei" : "☐ Apostei?"}</button>
+                <button class="copy-btn" type="button" data-copy="${esc(encodeURIComponent(copyText(item)))}">📋 Copiar</button>
+              </div>
+              ${scoreBadge(item)}
+              <div class="time">${esc(brDate)}<strong>${esc(brTime)}</strong><small>Horário do Brasil</small></div>
+            </div>
+          </div>
+          <div class="summary">
+            <div><span>${side ? "Odd visitante" : "Odd casa"}</span><strong>${fmtOdd(item.home_odd?.odd)}</strong><small>${esc(item.home_odd?.bookmaker)}</small></div>
+            <div><span>${side ? "H2H vis." : "H2H casa"}</span><strong>${esc(c.h2h?.value ?? "-")}/${esc((c.h2h?.target || "").split("/").pop() || "5")}</strong><small>vitorias</small></div>
+            <div><span>${side ? "Vis. fora 10" : "Casa ult. 10"}</span><strong>${esc(c.home_form?.value ?? "-")}/10</strong><small>vitorias</small></div>
+            <div><span>Resultado</span><strong class="result ${esc(result.class)}">${esc(result.label)}</strong><small>${esc(item.score)} · ${esc(item.status)}</small></div>
+          </div>
+          <div class="standing-line">Tabela: ${esc(homeRank)}º x ${esc(awayRank)}º · gap ${esc(rankGap)} · métricas ${esc(checksScore)}</div>
+          <div class="checks">
+            ${checkPill(c.odd)}
+            ${checkPill(c.h2h)}
+            ${checkPill(c.home_form)}
+            ${checkPill(c.standing)}
+          </div>
+          <details>
+            <summary>Detalhes</summary>
+            <div class="detail-grid">
+              <div>
+                <h3>H2H</h3>
+                ${matchRows(item.h2h)}
+              </div>
+              <div>
+                <h3>Mandante em casa</h3>
+                ${matchRows(item.home_form)}
+              </div>
+            </div>
+          </details>
+        </article>
+      `;
+    }
+
+    function showFilterSummary(items) {
+      const el = $("only4Summary");
+      const active = state.only4 || state.fHome || state.fAway || state.tab === "history";
+      if (!active) { el.hidden = true; return; }
+      const fin = (items || []).filter(x => ["green", "red"].includes(x.entry_result?.status));
+      const g = fin.filter(x => x.entry_result?.status === "green").length;
+      const r = fin.length - g;
+      const pending = (items || []).length - fin.length;
+      const profit = fin.reduce((s, x) => s + (x.entry_result?.status === "green" ? (Number(x.home_odd?.odd) - 1) * 100 : -100), 0);
+      const staked = fin.length * 100;
+      const roi = staked ? (profit / staked * 100) : 0;
+      const pos = profit >= 0;
+      const tags = [];
+      if (state.fHome && !state.fAway) tags.push("🏠 Casa");
+      if (state.fAway && !state.fHome) tags.push("🚌 Visitante");
+      if (state.only4) tags.push("⭐ 4/4");
+      const label = tags.length ? tags.join(" · ") : "Histórico geral";
+      el.hidden = false;
+      el.className = "only4-summary " + (pos ? "pos" : "neg");
+      el.innerHTML = `<div class="o4-left"><strong>${label} — ${(items || []).length} jogos</strong>`
+        + `<span>🟢 ${g} · 🔴 ${r}${pending ? ` · ⚪ ${pending} pend.` : ""}`
+        + `${fin.length ? ` · acerto ${Math.round(g / fin.length * 100)}%` : ""}</span></div>`
+        + `<div class="o4-pnl ${pos ? "pos" : "neg"}"><small>Lucro (R$100/stake)</small>`
+        + `<strong>${pos ? "+" : "−"}${fmtBRL(Math.abs(profit))}</strong>`
+        + `<em>${fin.length} apostas · ROI ${roi >= 0 ? "+" : ""}${roi.toFixed(1)}%</em></div>`;
+    }
+
+    function render() {
+      const data = state.data || {};
+      const history = state.history || { stats: {}, entries: [] };
+      const running = data.status === "running";
+      setBusy(running);
+      $("statusText").textContent = data.message || "Pronto.";
+      $("qCount").textContent = data.qualified?.length || 0;
+      if ($("rCount")) $("rCount").textContent = data.rejected?.length || 0;
+      $("hCount").textContent = (history.stats?.total || 0) + (state.awayData?.qualified?.length || 0);
+
+      const filt = (arr) => {
+        let a = arr || [];
+        const wantH = (!state.fHome && !state.fAway) ? true : state.fHome;
+        const wantA = (!state.fHome && !state.fAway) ? true : state.fAway;
+        a = a.filter(x => x.entry_side === "away" ? wantA : wantH);
+        if (state.only4) a = a.filter(is4of4);
+        if (state.tiers.size) a = a.filter(x => state.tiers.has(tierOf(x).tier));
+        return a;
+      };
+      $("only4Btn").classList.toggle("active", state.only4);
+      $("filterHomeBtn").classList.toggle("active", state.fHome);
+      $("filterAwayBtn").classList.toggle("active", state.fAway);
+      document.querySelectorAll(".tier-btn").forEach(b => b.classList.toggle("active", state.tiers.has(Number(b.dataset.tier))));
+
+      const banner = $("dayBanner");
+      if ((state.mode === "byday" || state.mode === "bydays") && state.dayStats) {
+        const s = state.dayStats;
+        const acerto = (s.green + s.red) ? Math.round(s.green / (s.green + s.red) * 100) : 0;
+        let title;
+        if (state.mode === "bydays") {
+          const ds = [...state.selectedDays].sort();
+          const short = ds.map(d => `${d.slice(8)}/${d.slice(5, 7)}`);
+          title = ds.length <= 5
+            ? `📆 ${short.join(", ")}`
+            : `📆 ${ds.length} dias · ${short[0]} → ${short[short.length - 1]}`;
+        } else {
+          title = `📅 ${esc(fmtBRDayLabel(state.dayDate))}`;
+        }
+        banner.hidden = false;
+        banner.className = "day-banner";
+        banner.innerHTML = `<strong>${title}</strong>`
+          + `<span>${s.total} jogos · 🟢 ${s.green} · 🔴 ${s.red}`
+          + (s.pending ? ` · ⚪ ${s.pending} pendentes` : "")
+          + (s.green + s.red ? ` · acerto ${acerto}%` : "") + `</span>`;
+      } else {
+        banner.hidden = true;
+      }
+
+      if (state.mode === "byday" || state.mode === "bydays") {
+        const s = state.dayStats || {};
+        $("metrics").innerHTML = [
+          metric("Jogos (BR)", s.total ?? 0),
+          metric("GREEN", s.green ?? 0),
+          metric("RED", s.red ?? 0),
+          metric("Pendentes", s.pending ?? 0),
+        ].join("");
+        const bydayItems = filt(data.qualified);
+        showFilterSummary(bydayItems);
+        $("list").innerHTML = bydayItems.length
+          ? bydayItems.map(card).join("")
+          : `<div class="empty">Nenhum jogo ${state.only4 ? "4/4 " : ""}neste dia (BR).</div>`;
+        return;
+      }
+
+      if (state.mode === "overall") {
+        const p = state.pnl || {};
+        const s = state.dayStats || {};
+        const pos = (p.profit ?? 0) >= 0;
+        $("metrics").innerHTML = [
+          metric("Finalizados", p.finished ?? 0),
+          metric("Acerto", `${p.hit ?? 0}%`),
+          metric("Apostado", fmtBRL(p.staked)),
+          metric("ROI", `${p.roi ?? 0}%`),
+        ].join("");
+        banner.hidden = false;
+        banner.className = "day-banner pnl-banner " + (pos ? "pos" : "neg");
+        banner.innerHTML = `<strong>📊 Histórico Geral</strong>`
+          + `<span>${s.total ?? 0} jogos · 🟢 ${p.green ?? 0} · 🔴 ${p.red ?? 0}`
+          + (s.pending ? ` · ⚪ ${s.pending} ao vivo/pendente` : "") + `</span>`
+          + `<div class="pnl-figure ${pos ? "pos" : "neg"}">`
+          + `<small>Lucro com R$ ${p.stake ?? 100} por entrada</small>`
+          + `<strong>${pos ? "+" : "−"}${fmtBRL(Math.abs(p.profit ?? 0))}</strong>`
+          + `<em>ROI ${p.roi ?? 0}% · ${p.finished ?? 0} apostas</em></div>`;
+        const overallItems = filt(data.qualified);
+        showFilterSummary(overallItems);
+        $("list").innerHTML = overallItems.length
+          ? overallItems.map(card).join("")
+          : `<div class="empty">Sem jogos ${state.only4 ? "4/4" : ""}.</div>`;
+        return;
+      }
+
+      if (state.mode === "away") {
+        const p = state.pnl || {};
+        const s = state.dayStats || {};
+        const pos = (p.profit ?? 0) >= 0;
+        $("metrics").innerHTML = [
+          metric("Entradas visit.", s.total ?? 0),
+          metric("Acerto", `${p.hit ?? 0}%`),
+          metric("GREEN/RED", `${p.green ?? 0}/${p.red ?? 0}`),
+          metric("ROI", `${p.roi ?? 0}%`),
+        ].join("");
+        banner.hidden = false;
+        banner.className = "day-banner pnl-banner " + (pos ? "pos" : "neg");
+        banner.innerHTML = `<strong>🚌 Visitantes (back no visitante 4 métricas)</strong>`
+          + `<span>${s.total ?? 0} jogos · 🟢 ${p.green ?? 0} · 🔴 ${p.red ?? 0}`
+          + (s.pending ? ` · ⚪ ${s.pending}` : "") + `</span>`
+          + `<div class="pnl-figure ${pos ? "pos" : "neg"}">`
+          + `<small>Lucro R$ ${p.stake ?? 100}/entrada</small>`
+          + `<strong>${pos ? "+" : "−"}${fmtBRL(Math.abs(p.profit ?? 0))}</strong>`
+          + `<em>ROI ${p.roi ?? 0}% · ${p.finished ?? 0} apostas</em></div>`;
+        const awayItems = filt(data.qualified);
+        showFilterSummary(awayItems);
+        $("list").innerHTML = awayItems.length
+          ? awayItems.map(card).join("")
+          : `<div class="empty">Nenhum visitante ${state.only4 ? "4/4 " : ""}qualificado.</div>`;
+        return;
+      }
+
+      // Histórico unificado (casa + visitante). Filtros Casa/Visitante/4/4 via filt().
+      const rawItems = state.tab === "history" ? state.allHistory : (data[state.tab] || []);
+      const items = filt(rawItems);
+
+      if (state.tab === "history") {
+        const fin = items.filter(x => ["green", "red"].includes(x.entry_result?.status));
+        const g = fin.filter(x => x.entry_result?.status === "green").length;
+        const homeN = items.filter(x => x.entry_side !== "away").length;
+        const awayN = items.filter(x => x.entry_side === "away").length;
+        $("metrics").innerHTML = [
+          metric("Jogos", items.length),
+          metric("🏠 / 🚌", `${homeN} / ${awayN}`),
+          metric("GREEN / RED", `${g} / ${fin.length - g}`),
+          metric("Acerto", fin.length ? `${Math.round(g / fin.length * 100)}%` : "—"),
+        ].join("");
+      } else {
+        $("metrics").innerHTML = [
+          metric("Jogos do dia", data.total_fixtures ?? 0),
+          metric(data.include_played ? "Analisados" : "Pre-live", data.include_played ? (data.scan_fixtures ?? 0) : (data.prelive_fixtures ?? 0)),
+          metric("Odd / analisados", `${data.odd_candidates ?? 0} / ${data.processed_candidates ?? data.odd_candidates ?? 0}`),
+          metric("Atualizado", fmtBRDateTime(data.finished_at || data.started_at)),
+        ].join("");
+      }
+      showFilterSummary(items);
+      $("only4Count").textContent = state.only4 ? `(${items.length})` : "";
+      $("list").innerHTML = items.length
+        ? items.map(card).join("")
+        : `<div class="empty">Nenhuma partida com esses filtros.</div>`;
+    }
+
+    async function refreshHistory() {
+      const [overall, a] = await Promise.all([
+        fetch("api/overall?ts=" + Date.now() + "&stake=100").then(r => r.json()),
+        fetch("api/away?ts=" + Date.now()).then(r => r.json()).catch(() => ({ qualified: [] })),
+      ]);
+      state.overall = overall;
+      state.awayData = a;
+      // Histórico unificado: casa (todos os dias) + visitante, ordenado por horário
+      state.allHistory = [...(overall.qualified || []), ...(a.qualified || [])]
+        .sort((x, y) => (y.timestamp || 0) - (x.timestamp || 0));
+    }
+
+    async function refresh() {
+      const params = new URLSearchParams({
+        ts: Date.now(),
+        date: $("dateInput").value,
+        include_played: state.includePlayed ? "1" : "0"
+      });
+      const r = await fetch("api/state?" + params.toString());
+      state.data = await r.json();
+      await refreshHistory();
+      render();
+    }
+
+    async function loadSaved(includePlayed = false) {
+      state.mode = "snapshot";
+      state.includePlayed = includePlayed;
+      await refresh();
+    }
+
+    function fmtBRDayLabel(iso) {
+      if (!iso) return "-";
+      const [y, m, d] = iso.split("-");
+      const label = `${d}/${m}/${y}`;
+      if (state.defaults?.today === iso) return `Hoje · ${label}`;
+      if (state.defaults?.yesterday === iso) return `Ontem · ${label}`;
+      if (state.defaults?.tomorrow === iso) return `Amanhã · ${label}`;
+      return label;
+    }
+
+    async function refreshByDay() {
+      const [dayR, awayR] = await Promise.all([
+        fetch(`api/by-day?ts=${Date.now()}&date=${state.dayDate}`).then(r => r.json()),
+        fetch(`api/away?date=${state.dayDate}&ts=${Date.now()}`).then(r => r.json()).catch(() => ({ qualified: [] })),
+      ]);
+      const merged = [...(dayR.qualified || []), ...(awayR.qualified || [])]
+        .sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0));
+      const fin = merged.filter(x => ["green", "red"].includes(x.entry_result?.status));
+      const green = fin.filter(x => x.entry_result?.status === "green").length;
+      state.data = { status: "ready", message: `Dia BR ${state.dayDate}`, qualified: merged, rejected: [] };
+      state.dayStats = { total: merged.length, green, red: fin.length - green, pending: merged.length - fin.length };
+      state.tab = "qualified";
+      render();
+    }
+
+    async function loadByDay(dateStr) {
+      state.mode = "byday";
+      state.dayDate = dateStr;
+      await refreshByDay();
+    }
+
+    async function refreshDaySelect() {
+      const data = await fetch(`api/by-day?ts=${Date.now()}`).then(r => r.json());
+      state.dayCounts = {};
+      (data.days || []).forEach(d => { state.dayCounts[d.date] = d.total; });
+      if (!$("calPopover").hidden) buildCalendar();
+    }
+
+    // ---- Calendário multi-dia ----
+    const CAL_WD = ["Dom", "Seg", "Ter", "Qua", "Qui", "Sex", "Sáb"];
+    const CAL_MON = ["Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho", "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"];
+    const isoOf = (y, m, d) => `${y}-${String(m + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+    const shiftIso = (iso, delta) => {
+      const [y, m, d] = iso.split("-").map(Number);
+      return new Date(Date.UTC(y, m - 1, d + delta)).toISOString().slice(0, 10);
+    };
+    function datesBetween(a, b) {
+      const [lo, hi] = a <= b ? [a, b] : [b, a];
+      const out = []; let cur = lo;
+      while (cur <= hi) { out.push(cur); cur = shiftIso(cur, 1); }
+      return out;
+    }
+
+    function buildCalendar() {
+      const y = state.calYear, m = state.calMonth;
+      $("calTitle").textContent = `${CAL_MON[m]} ${y}`;
+      const first = new Date(y, m, 1).getDay();
+      const nDays = new Date(y, m + 1, 0).getDate();
+      const todayIso = state.defaults?.today;
+      const selArr = [...state.selectedDays].sort();
+      const selMin = selArr[0], selMax = selArr[selArr.length - 1];
+      let html = CAL_WD.map(w => `<span class="cal-wd">${w}</span>`).join("");
+      for (let i = 0; i < first; i++) html += `<span class="cal-cell cal-blank" aria-hidden="true"></span>`;
+      for (let d = 1; d <= nDays; d++) {
+        const iso = isoOf(y, m, d);
+        const cnt = state.dayCounts[iso] || 0;
+        const cls = ["cal-cell"];
+        if (cnt > 0) cls.push("has");
+        if (iso === todayIso) cls.push("today");
+        if (state.selectedDays.has(iso)) {
+          cls.push("sel");
+          const prevSel = state.selectedDays.has(shiftIso(iso, -1)) && new Date(iso).getUTCDay() !== 0;
+          const nextSel = state.selectedDays.has(shiftIso(iso, 1)) && new Date(iso).getUTCDay() !== 6;
+          if (!prevSel) cls.push("r-start");
+          if (!nextSel) cls.push("r-end");
+          if (iso === selMin) cls.push("r-first");
+          if (iso === selMax) cls.push("r-last");
+        }
+        if (iso === state.calAnchor) cls.push("anchor");
+        html += `<button type="button" class="${cls.join(" ")}" data-iso="${iso}">${d}${cnt ? `<i>${cnt}</i>` : ""}</button>`;
+      }
+      $("calGrid").innerHTML = html;
+      const info = $("calSelInfo");
+      if (state.calAnchor) info.textContent = "agora clique no dia final";
+      else if (state.selectedDays.size) info.textContent = `${state.selectedDays.size} dia(s) selecionado(s)`;
+      else info.textContent = "clique início e fim do intervalo";
+    }
+
+    function openCalendar() {
+      if (state.calYear == null) {
+        const base = (state.defaults?.today || new Date().toISOString().slice(0, 10)).split("-");
+        state.calYear = Number(base[0]);
+        state.calMonth = Number(base[1]) - 1;
+      }
+      const pop = $("calPopover");
+      pop.hidden = !pop.hidden;
+      if (!pop.hidden) buildCalendar();
+    }
+
+    async function refreshByDays() {
+      const dates = [...state.selectedDays].sort();
+      if (!dates.length) return;
+      // Uma única chamada pro intervalo (casa + visitante já mesclados no servidor).
+      // Se falhar, mantém o que está na tela em vez de "piscar" com lista parcial.
+      let payload;
+      try {
+        const r = await fetch(`api/by-days?ts=${Date.now()}&from=${dates[0]}&to=${dates[dates.length - 1]}`);
+        if (!r.ok) throw new Error("http " + r.status);
+        payload = await r.json();
+      } catch (e) {
+        return;
+      }
+      if (state.mode !== "bydays") return; // usuário trocou de visão enquanto carregava
+      const merged = payload.qualified || [];
+      const fin = merged.filter(x => ["green", "red"].includes(x.entry_result?.status));
+      const green = fin.filter(x => x.entry_result?.status === "green").length;
+      state.data = { status: "ready", message: `${dates.length} dias`, qualified: merged, rejected: [] };
+      state.dayStats = { total: merged.length, green, red: fin.length - green, pending: merged.length - fin.length };
+      state.tab = "qualified";
+      render();
+    }
+
+    async function applyCalendar() {
+      state.calAnchor = null;
+      if (!state.selectedDays.size) { $("calPopover").hidden = true; return; }
+      state.mode = "bydays";
+      $("calPopover").hidden = true;
+      tickCount = 0;
+      await refreshByDays();
+    }
+
+    async function refreshOverall() {
+      const r = await fetch(`api/overall?ts=${Date.now()}&stake=100`);
+      const payload = await r.json();
+      state.data = { status: "ready", message: "Histórico geral", qualified: payload.qualified || [], rejected: [] };
+      state.dayStats = payload.stats || null;
+      state.pnl = payload.pnl || null;
+      state.tab = "qualified";
+      render();
+    }
+
+    async function loadOverall() {
+      state.mode = "overall";
+      await refreshOverall();
+    }
+
+    async function refreshAway() {
+      const payload = await fetch(`api/away?ts=${Date.now()}`).then(r => r.json());
+      state.data = { status: "ready", message: "Visitantes", qualified: payload.qualified || [], rejected: [] };
+      state.dayStats = payload.stats || null;
+      state.pnl = payload.pnl || null;
+      state.tab = "qualified";
+      render();
+    }
+
+    async function loadAway() {
+      state.mode = "away";
+      await refreshAway();
+    }
+
+    let tickBusy = false;
+    let tickCount = 0;
+    async function tick() {
+      if (tickBusy) return; // nunca sobrepõe dois refreshes (era isso que fazia a lista "mudar sozinha")
+      tickBusy = true;
+      tickCount++;
+      try {
+        if (state.mode === "overall") await refreshOverall();
+        else if (state.mode === "away") await refreshAway();
+        else if (state.mode === "byday") await refreshByDay();
+        else if (state.mode === "bydays") { if (tickCount % 12 === 1) await refreshByDays(); } // intervalo: a cada ~30s
+        else await refresh();
+      } catch (e) {
+        console.warn("tick", e);
+      } finally {
+        tickBusy = false;
+      }
+    }
+
+    async function atualizarTudo() {
+      const btn = $("refreshAllBtn");
+      const orig = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = "🔄 Atualizando...";
+      $("refreshStatus").textContent = "escaneando casa + visitante e atualizando placares...";
+      try {
+        await fetch("api/refresh-all", { method: "POST" });
+        await refreshDaySelect();
+        await tick();
+        $("refreshStatus").textContent = "✅ atualizado — novos jogos entram nos próximos segundos";
+        setTimeout(() => { $("refreshStatus").textContent = ""; }, 6000);
+      } catch (e) {
+        $("refreshStatus").textContent = "❌ erro ao atualizar";
+      } finally {
+        btn.disabled = false;
+        btn.textContent = orig;
+      }
+    }
+
+    async function boot() {
+      state.bets = loadBets();
+      const defaults = await fetch("api/default-date").then(r => r.json());
+      state.defaults = defaults;
+      $("dateInput").value = defaults.today;
+      $("refreshAllBtn").onclick = () => atualizarTudo();
+      $("todayBrBtn").onclick = () => loadByDay(defaults.today);
+      $("tomorrowBrBtn").onclick = () => loadByDay(defaults.tomorrow);
+      $("filterHomeBtn").onclick = () => { state.fHome = !state.fHome; render(); };
+      $("filterAwayBtn").onclick = () => { state.fAway = !state.fAway; render(); };
+      $("only4Btn").onclick = () => { state.only4 = !state.only4; render(); };
+      document.querySelectorAll(".tier-btn").forEach(btn => {
+        btn.onclick = () => {
+          const t = Number(btn.dataset.tier);
+          if (state.tiers.has(t)) state.tiers.delete(t); else state.tiers.add(t);
+          render();
+        };
+      });
+      $("calBtn").onclick = () => openCalendar();
+      $("calPrev").onclick = () => { if (--state.calMonth < 0) { state.calMonth = 11; state.calYear--; } buildCalendar(); };
+      $("calNext").onclick = () => { if (++state.calMonth > 11) { state.calMonth = 0; state.calYear++; } buildCalendar(); };
+      $("calClear").onclick = () => { state.selectedDays.clear(); state.calAnchor = null; buildCalendar(); };
+      $("calApply").onclick = () => applyCalendar();
+      $("calGrid").onclick = (ev) => {
+        const cell = ev.target.closest(".cal-cell[data-iso]");
+        if (!cell) return;
+        const iso = cell.dataset.iso;
+        if (!state.calAnchor) {
+          // 1º clique: início do intervalo
+          state.calAnchor = iso;
+          state.selectedDays = new Set([iso]);
+        } else {
+          // 2º clique: preenche o intervalo âncora..iso (inclusive)
+          state.selectedDays = new Set(datesBetween(state.calAnchor, iso));
+          state.calAnchor = null;
+        }
+        buildCalendar();
+      };
+      document.addEventListener("click", (ev) => {
+        const pop = $("calPopover");
+        if (pop.hidden) return;
+        if (!pop.contains(ev.target) && ev.target !== $("calBtn")) pop.hidden = true;
+      });
+      await refreshDaySelect();
+      document.querySelectorAll(".tab").forEach(btn => {
+        btn.onclick = () => {
+          document.querySelectorAll(".tab").forEach(b => b.classList.remove("active"));
+          btn.classList.add("active");
+          state.mode = "snapshot";
+          state.tab = btn.dataset.tab;
+          refresh();
+        };
+      });
+      $("list").addEventListener("click", async (ev) => {
+        const betBtn = ev.target.closest(".bet-btn");
+        if (betBtn) {
+          const key = betBtn.dataset.bet;
+          if (state.bets.has(key)) state.bets.delete(key);
+          else state.bets.add(key);
+          saveBets();
+          render();
+          return;
+        }
+        const btn = ev.target.closest(".copy-btn");
+        if (!btn) return;
+        const text = decodeURIComponent(btn.dataset.copy || "");
+        try {
+          if (navigator.clipboard?.writeText) {
+            await navigator.clipboard.writeText(text);
+          } else {
+            const ta = document.createElement("textarea");
+            ta.value = text;
+            ta.style.position = "fixed";
+            ta.style.opacity = "0";
+            document.body.appendChild(ta);
+            ta.select();
+            document.execCommand("copy");
+            document.body.removeChild(ta);
+          }
+          const original = btn.textContent;
+          btn.textContent = "✅ Copiado";
+          btn.classList.add("copied");
+          setTimeout(() => { btn.textContent = original; btn.classList.remove("copied"); }, 1500);
+        } catch (e) {
+          btn.textContent = "❌ Erro";
+          setTimeout(() => { btn.textContent = "📋 Copiar"; }, 1500);
+        }
+      });
+      await loadByDay(defaults.today);
+      if (location.search.includes("autocal")) openCalendar(); // debug visual do calendário
+      setInterval(tick, 2500);
+    }
+
+    boot();
+  </script>
+</body>
+</html>
