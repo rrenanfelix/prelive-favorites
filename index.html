@@ -16,7 +16,7 @@
 (() => {
   const realFetch = window.fetch.bind(window);
   const cache = {};
-  const load = (n) => cache[n] || (cache[n] = realFetch(`snap/${n}.json?v=202611100507`).then(r => {
+  const load = (n) => cache[n] || (cache[n] = realFetch(`snap/${n}.json?v=202611100707`).then(r => {
     if (!r.ok) throw new Error("snap " + n + " " + r.status);
     return r.json();
   }));
@@ -89,7 +89,7 @@
   <main>
     <section class="controls">
       <button id="refreshAllBtn" type="button" class="refresh-all-btn" hidden style="display:none">🔄 Atualizar tudo</button>
-      <span id="refreshStatus" class="refresh-status">📸 Atualizado em 10/11/2026 05:07</span>
+      <span id="refreshStatus" class="refresh-status">📸 Atualizado em 10/11/2026 07:07</span>
       <span class="spacer"></span>
       <button id="todayBrBtn" type="button" class="byday-btn">Hoje</button>
       <button id="tomorrowBrBtn" type="button" class="byday-btn">Amanhã</button>
